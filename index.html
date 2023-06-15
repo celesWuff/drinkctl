@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="北京知青春科技“点点-智慧校园” app 扫码饮水功能的开源实现。适用于国内各大高校宿舍饮水机。" />
+    <meta name="theme-color" content="#fafafa" />
+    <meta name="referrer" content="no-referrer" />
+    <link rel="apple-touch-icon" href="logo192.png" />
+    <link rel="manifest" href="manifest.json" />
+    <link rel="stylesheet" href="light.min.css"> <!-- https://watercss.kognise.dev/ -->
+    <script src="./qr-scanner.umd.min.js"></script> <!-- qr-scanner v1.4.2 -->
+    <title>点点 FOSS</title>
+    <style>
+        body {
+            background-color: #fafafa;
+        }
+
+        .plane {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            -webkit-transform: translate(-50%, -50%);
+            transform: translate(-50%, -50%);
+            display: flex;
+            align-items: center;
+            flex-direction: column;
+        }
+
+        .dropdown {
+            display: grid;
+            grid-auto-flow: column;
+            grid-column-gap: 2rem;
+            grid-template-columns: repeat(2, 1fr);
+            grid-auto-flow: dense;
+            padding-left: 0.5rem;
+            padding-right: 0.5rem;
+        }
+
+        .dropdown>a>p {
+            white-space: nowrap;
+        }
+
+        .dropdown>a>p>span {
+            font-size: small;
+            font-family: monospace;
+        }
+
+        .misc {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            margin: 10px;
+            z-index: -1;
+        }
+
+        [hidden] {
+            display: none !important;
+        }
+    </style>
+</head>
+
+<body>
+    <noscript class="plane">需要启用 JavaScript。</noscript>
+
+    <div id="login" class="plane" hidden>
+        <input id="username" type="text" placeholder="用户名/手机号码">
+        <input id="password" type="password" placeholder="密码">
+        <button id="login-button" onclick="啥('login')" style="margin: 0%;">登录</button>
+        <a onclick="啥('openApiEndpointDialog')" href="#">
+            <p style="font-size: small;"><br>更改 API 端点</p>
+        </a>
+    </div>
+
+    <div id="main" class="plane" hidden>
+        <h3><span id="name" style="font-family: monospace; font-size: larger;">...</span>，您好</h3>
+        <p>余额：<span id="balance" style="font-family: monospace; font-size: larger;">...</span> 元</p>
+
+        <details open id="history-devices">
+            <summary>选择一个常用设备</summary>
+            <div class="dropdown">
+                <p id="dropdown-placeholder">...</p>
+            </div>
+        </details>
+
+        <p id="qrcode-scanner-button-container">
+            <button onclick="啥('startQrcodeScanner')" style="margin: 0%;">扫描二维码</button>
+        </p>
+
+        <div id="qrcode-scanner-container" style="display: flex; align-items: center; flex-direction: column;" hidden>
+            <video id="qrcode-scanner"></video>
+
+            <br>
+            <b>从相册选择二维码</b>
+            <input id="qrcode-scanner-file-input" type="file" accept="image/*" capture="environment"
+                onchange="啥('qrcodeScannerFileInputChanged')">
+
+            <p>如果看不到摄像头画面，请授予摄像头权限，然后点击“停止扫码”，再重新打开扫码器。</p>
+            <button onclick="啥('stopQrcodeScanner')" style="margin: 0%;">停止扫码</button>
+        </div>
+
+        <p>
+            <a onclick="啥('showHistoryTransactions')" href="#" style="margin: 0%;">消费历史</a>
+            <span style="margin-left: 1rem;"></span>
+            <a onclick="啥('logout')" href="#" style="margin-top: 10px;">退出登录</a>
+        </p>
+    </div>
+
+    <div class="misc">
+        <button id="install-button" hidden>将点点 FOSS 安装到系统</button>
+        <p style="font-size: smaller; color: gray; margin: 0%;">
+            <a href="https://github.com/celesWuff/drinkctl" target="_blank">源代码</a> · <a
+                href="https://github.com/celesWuff/drinkctl#常见问题" target="_blank">疑难解答</a> · v1.0.0-beta<br>
+            <span style="font-size: smaller;">copyright (c) 2023 celesWuff, licensed under MIT License</span>
+        </p>
+    </div>
+
+    <dialog id="dialog">
+        <!-- <header id="dialog-header"></header> -->
+        <form method="dialog">
+            <p id="dialog-content"></p>
+            <menu style="display: flex; justify-content: flex-end;">
+                <button onclick="啥('closeDialog')">好</button>
+            </menu>
+        </form>
+    </dialog>
+
+    <dialog id="api-endpoint-dialog">
+        <form method="dialog">
+            <p>请输入 API 端点（反向代理）</p>
+            <input id="api-endpoint-input" type="text" placeholder="留空以使用默认端点">
+            <p style="font-size: smaller;">如果您不确定这是什么，此处留空即可。</p>
+            <menu style="display: flex; justify-content: flex-end;">
+                <button onclick="啥('setApiEndpoint')">好</button>
+            </menu>
+    </dialog>
+</body>
+
+<script>
+    // jquery 青春版
+    const $ = (selector) => document.querySelector(selector);
+    const $$ = (selector) => document.querySelectorAll(selector);
+
+    //  ↓ ↓ ↓ ↓
+    let headers = {
+        "Content-Type": "application/json;charset=UTF-8",
+        "Accept": "*/*",
+        "app-version": "2.0.2",
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept-Language": "zh-CN,zh-Hans;q=0.9",
+        "App": "diandian",
+
+        // https://bugs.chromium.org/p/chromium/issues/detail?id=571722
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Html5Plus/1.0 (Immersed/44) uni-app",
+    };
+
+    // api endpoint
+    const defaultApiEndpoint = "https://gem.celeswuff.science/corsproxy/?apiurl=https://op.zqccloud.com";
+    let apiEndpoint = localStorage.getItem("apiEndpoint");
+    if (apiEndpoint === null) {
+        apiEndpoint = defaultApiEndpoint;
+        localStorage.setItem("apiEndpoint", apiEndpoint);
+    }
+
+    // everything about dom operations is here
+    // i want to use react/vue next time
+    async function 啥(operation, ...args) {
+        try {
+            if (operation === "init") {
+                const token = localStorage.getItem("token");
+                const name = localStorage.getItem("name");
+                const username = localStorage.getItem("username");
+                const password = localStorage.getItem("password");
+
+                if (username !== null && password !== null) {
+                    $("#username").value = username;
+                    $("#password").value = password;
+                }
+
+                function isTokenExpired(token) {
+                    const payload = JSON.parse(atob(token.split(".")[1]));
+                    return payload.exp < Date.now() / 1000;
+                }
+
+                if (token === null) {
+                    $("#login").hidden = false;
+                } else if (isTokenExpired(token)) {
+                    $("#login").hidden = false;
+                    啥("login");
+                } else {
+                    headers = { ...headers, "Authorization": token };
+                    啥("loginSuccess", name);
+                }
+            }
+
+            if (operation === "openApiEndpointDialog") {
+                $("#api-endpoint-dialog").showModal();
+            }
+
+            if (operation === "setApiEndpoint") {
+                const newApiEndpoint = $("#api-endpoint-input").value;
+
+                if (newApiEndpoint !== "") {
+                    apiEndpoint = newApiEndpoint;
+                } else {
+                    apiEndpoint = defaultApiEndpoint;
+                }
+                localStorage.setItem("apiEndpoint", apiEndpoint);
+
+                啥("closeDialog");
+            }
+
+            if (operation === "login") {
+                const username = $("#username").value;
+                const password = $("#password").value;
+
+                if (!username || !password) {
+                    return;
+                }
+
+                啥("pendingLogin");
+
+                // delete api cache
+                caches.open("files").then((cache) => {
+                    cache.keys().then((keys) => {
+                        keys.forEach((key) => {
+                            if (key.url.includes("zqccloud")) {
+                                cache.delete(key);
+                            }
+                        });
+                    });
+                });
+
+                let { token, name } = await login(username, password);
+
+                // hide phone number
+                if (name.startsWith("1") && name.length === 11) {
+                    name = name.replace(/^(\d{3})\d{4}(\d{4})$/, "$1****$2");
+                }
+
+                headers = { ...headers, "Authorization": token };
+                localStorage.setItem("token", token);
+                localStorage.setItem("name", name);
+                localStorage.setItem("username", username);
+                localStorage.setItem("password", password);
+
+                啥("loginSuccess", name);
+            }
+
+            if (operation === "pendingLogin") {
+                $("#login-button").disabled = true;
+                $("#login-button").innerText = "请稍后";
+            }
+
+            if (operation === "loginSuccess") {
+                const name = args[0];
+
+                $("#login").hidden = true;
+                $("#main").hidden = false;
+                $("#name").innerText = name;
+
+                啥("renderBalance");
+                啥("renderHistoryDevices");
+            }
+
+            if (operation === "renderBalance") {
+                const balance = await queryBalance();
+                $("#balance").innerText = (balance / 100).toFixed(2);
+            }
+
+            if (operation === "renderHistoryDevices") {
+                const devices = await queryHistoryDevices();
+                $("#dropdown-placeholder").remove();
+                for (const device of devices) {
+                    $(".dropdown").innerHTML += `<a onclick="啥('start', '${device.id}', '${device.name}')" href="#"><p>${device.name}<span><br>${device.id}</span></p></a>`;
+                }
+            }
+
+            if (operation === "start") {
+                const deviceId = args[0];
+                const deviceName = args[1] || deviceId;
+
+                $("#dialog-content").innerText = `正在开启：${deviceName}\n\n等待结算……`;
+                $("#dialog").showModal();
+
+                const drinkToken = await start(deviceId);
+
+                // waiting for the payment to be done
+                const interval = setInterval(async () => {
+                    const amount = await queryCurrentRunPaymentAmount(drinkToken);
+
+                    if (typeof amount === "number") {
+                        clearInterval(interval);
+                        $("#dialog-content").innerText = `${deviceName} 结算成功。\n\n小计：${(amount / 100).toFixed(2)} 元`;
+                        $("#dialog").showModal();
+                    }
+                }, 1000);
+            }
+
+            if (operation === "showHistoryTransactions") {
+                $("#dialog-content").innerText = "请稍后...";
+                $("#dialog").showModal();
+
+                const transactions = await queryHistoryTransactions();
+
+                $("#dialog-content").innerText = transactions.map((transaction) => {
+                    return `${new Date(transaction.time).toLocaleString()}：${transaction.deviceName}，${(transaction.amount / 100).toFixed(2)} 元`;
+                }).join("\n");
+            }
+
+            if (operation === "startQrcodeScanner") {
+                $("#history-devices").hidden = true;
+                $("#qrcode-scanner-button-container").hidden = true;
+                $("#qrcode-scanner-container").hidden = false;
+                $(".misc").hidden = true;
+                qrScanner.start();
+            }
+
+            if (operation === "stopQrcodeScanner") {
+                $("#history-devices").hidden = false;
+                $("#qrcode-scanner-button-container").hidden = false;
+                $("#qrcode-scanner-container").hidden = true;
+                $(".misc").hidden = false;
+                qrScanner.stop();
+            }
+
+            if (operation === "qrcodeScannerFileInputChanged") {
+                const file = $("#qrcode-scanner-file-input").files[0];
+                if (!file) return;
+
+                QrScanner.scanImage(file, { returnDetailedScanResult: true })
+                    .then((result) => 啥("receivedQrcode", result.data))
+                    .catch((error) => {
+                        $("#dialog-content").innerText = "不是饮水机二维码。";
+                        $("#dialog").showModal();
+                    });
+            }
+
+            if (operation === "receivedQrcode") {
+                const qrcode = args[0];
+                const urlTemplate = "https://dl.zqccloud.com/app.html?div=";
+
+                if (qrcode.startsWith(urlTemplate)) {
+                    const deviceId = qrcode.replace(urlTemplate, "");
+                    啥("stopQrcodeScanner");
+                    啥("start", deviceId);
+                }
+            }
+
+            if (operation === "logout") {
+                localStorage.removeItem("token");
+                localStorage.removeItem("name");
+                document.location.reload(); // im lazy
+            }
+
+            if (operation === "closeDialog") {
+                $("#dialog").close();
+                $("#api-endpoint-dialog").close();
+            }
+        } catch (e) {
+            let errorMessage;
+            if (e.message === "Failed to fetch") {
+                errorMessage = "网络错误。";
+            } else {
+                errorMessage = `出现错误：\n\n${e.message}\n\n是什么呢`;
+            }
+
+            $("#dialog-content").innerText = errorMessage;
+            $("#dialog").showModal();
+
+            throw e;
+        }
+    }
+
+    // init
+    window.addEventListener("DOMContentLoaded", (event) => 啥("init"));
+
+    // prepare qrcode scanner
+    const qrScanner = new QrScanner(
+        $("#qrcode-scanner"),
+        result => 啥("receivedQrcode", result.data),
+        {
+            highlightScanRegion: true,
+            highlightCodeOutline: true,
+        },
+    );
+
+    // fetch api
+    async function login(username, password) {
+        const response = await fetch(apiEndpoint + "/jwt/auth/login", {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+                "username": username.toString(),
+                "password": password.toString(),
+                "externalId": "",
+                "externalType": "",
+                "pushRegId": ""
+            })
+        });
+        const data = await response.json();
+
+        if (data.code != 0) {
+            throw new Error(data.msg || data.message);
+        }
+
+        const token = data.data.token;
+        const name = data.data.creator.nickname;
+
+        return { token, name };
+    }
+
+    async function start(deviceId) {
+        const response = await fetch(apiEndpoint + "/st/drink/c/start", {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+                "uuid": deviceId.toString()
+            })
+        });
+        const data = await response.json();
+
+        if (data.code != 0) {
+            throw new Error(data.msg || data.message);
+        }
+
+        return data.data;
+    }
+
+    async function queryCurrentRunPaymentAmount(drinkToken) {
+        const response = await fetch(apiEndpoint + "/st/drink/r/drinkReport/" + drinkToken, {
+            method: "GET",
+            headers
+        });
+        const data = await response.json();
+
+        if (data.code === -1) {
+            return null;
+        }
+
+        if (data.code !== 0 && data.code !== -1) {
+            throw new Error(data.msg || data.message);
+        }
+
+        return data.data.amount;
+    }
+
+    async function queryBalance() {
+        const response = await fetch(apiEndpoint + "/st/product/r/charges.json", {
+            method: "GET",
+            headers
+        });
+        const data = await response.json();
+
+        if (data.code != 0) {
+            throw new Error(data.msg || data.message);
+        }
+
+        return data.data.student.amount;
+    }
+
+    async function queryHistoryDevices() {
+        const response = await fetch(apiEndpoint + encodeURIComponent("/st/commonDevice/r/all.json?limit=10&page=1"), {
+            method: "GET",
+            headers
+        });
+        const data = await response.json();
+
+        if (data.code != 0) {
+            throw new Error(data.msg || data.message);
+        }
+
+        const devices = [];
+        for (const device of data.data) {
+            devices.push({
+                "name": device.name,
+                "id": device.device.idYL // ??????
+            })
+        }
+
+        return devices;
+    }
+
+    async function queryHistoryTransactions() {
+        const response = await fetch(apiEndpoint + encodeURIComponent("/st/drink/r/drinkReportList?page=1&limit=20"), {
+            method: "GET",
+            headers
+        });
+        const data = await response.json();
+
+        if (data.code != 0) {
+            throw new Error(data.msg || data.message);
+        }
+
+        const transactions = [];
+        for (const transaction of data.data) {
+            transactions.push({
+                deviceName: transaction.device.name,
+                time: transaction.endTime,
+                amount: transaction.payAmount
+            })
+        }
+        return transactions;
+    }
+
+    // service worker
+    if (navigator.serviceWorker && !navigator.serviceWorker.controller) {
+        navigator.serviceWorker.register('serviceworker.js');
+    }
+
+    // pwa install prompt
+    const installButton = document.getElementById('install-button');
+
+    window.addEventListener('beforeinstallprompt', (event) => {
+        event.preventDefault();
+        window.deferredPrompt = event;
+        installButton.hidden = false;
+    });
+
+    installButton.addEventListener('click', async () => {
+        const promptEvent = window.deferredPrompt;
+        if (!promptEvent) {
+            return;
+        }
+        promptEvent.prompt();
+        const result = await promptEvent.userChoice;
+        window.deferredPrompt = null;
+        installButton.hidden = true;
+    });
+
+    window.addEventListener('appinstalled', (event) => {
+        window.deferredPrompt = null;
+    });
+
+    // auto resize for desktop
+    window.resizeTo(538, 835);
+</script>
+
+</html>
