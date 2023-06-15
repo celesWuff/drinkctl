@@ -157,7 +157,7 @@
     };
 
     // api endpoint
-    const defaultApiEndpoint = "https://gem.celeswuff.science/corsproxy/?apiurl=https://op.zqccloud.com";
+    const defaultApiEndpoint = "https://gem.celeswuff.science";
     let apiEndpoint = localStorage.getItem("apiEndpoint");
     if (apiEndpoint === null) {
         apiEndpoint = defaultApiEndpoint;
@@ -462,7 +462,7 @@
     }
 
     async function queryHistoryDevices() {
-        const response = await fetch(apiEndpoint + encodeURIComponent("/st/commonDevice/r/all.json?limit=10&page=1"), {
+        const response = await fetch(apiEndpoint + "/st/commonDevice/r/all.json?limit=10&page=1", {
             method: "GET",
             headers
         });
@@ -484,7 +484,7 @@
     }
 
     async function queryHistoryTransactions() {
-        const response = await fetch(apiEndpoint + encodeURIComponent("/st/drink/r/drinkReportList?page=1&limit=20"), {
+        const response = await fetch(apiEndpoint + "/st/drink/r/drinkReportList?page=1&limit=20", {
             method: "GET",
             headers
         });
